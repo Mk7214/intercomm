@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:nearby_connections/nearby_connections.dart';
 import '../services/nearby_service.dart';
 import 'identity_provider.dart';
+import '../models/location_update.dart';
 
 final meshProvider = StateNotifierProvider<MeshNotifier, MeshState>((ref) {
   return MeshNotifier(ref);
@@ -14,12 +15,14 @@ class MeshState {
   final bool isDiscovering;
   final List<String> connectedEndpoints;
   final List<String> messages;
+  final Map<String, LocationUpdate> peerLocations;
 
   MeshState({
     this.isAdvertising = false,
     this.isDiscovering = false,
     this.connectedEndpoints = const [],
     this.messages = const [],
+    this.peerLocations = const {},
   });
 
   MeshState copyWith({
@@ -27,12 +30,14 @@ class MeshState {
     bool? isDiscovering,
     List<String>? connectedEndpoints,
     List<String>? messages,
+    Map<String, LocationUpdate>? peerLocations,
   }) {
     return MeshState(
       isAdvertising: isAdvertising ?? this.isAdvertising,
       isDiscovering: isDiscovering ?? this.isDiscovering,
       connectedEndpoints: connectedEndpoints ?? this.connectedEndpoints,
       messages: messages ?? this.messages,
+      peerLocations: peerLocations ?? this.peerLocations,
     );
   }
 }
@@ -66,8 +71,6 @@ class MeshNotifier extends StateNotifier<MeshState> {
         state = state.copyWith(
           connectedEndpoints: [...state.connectedEndpoints, id]
         );
-        // Send a test message on connect
-        _nearbyService?.sendTestMessage(id, 'Hello from ${identity.deviceId.substring(0, 8)}!');
       },
       onDisconnected: (id) {
         debugPrint('Disconnected: $id');
@@ -77,14 +80,70 @@ class MeshNotifier extends StateNotifier<MeshState> {
       },
       onPayloadReceived: (id, payload) {
         if (payload.type == PayloadType.BYTES) {
-          final message = utf8.decode(payload.bytes!);
-          debugPrint('Received message from $id: $message');
-          state = state.copyWith(
-            messages: [...state.messages, '$id: $message']
-          );
+          final messageStr = utf8.decode(payload.bytes!);
+          try {
+            final json = jsonDecode(messageStr);
+            if (json['type'] == 'location_update') {
+              _handleLocationUpdate(LocationUpdate.fromJson(json), id);
+            } else {
+              _handlePlainMessage(id, messageStr);
+            }
+          } catch (e) {
+             _handlePlainMessage(id, messageStr);
+          }
         }
       },
     );
+  }
+
+  void _handlePlainMessage(String id, String text) {
+    state = state.copyWith(messages: [...state.messages, '$id: $text']);
+  }
+
+  void _handleLocationUpdate(LocationUpdate update, String senderId) {
+    // Check if we have a newer update for this device
+    final existing = state.peerLocations[update.deviceId];
+    if (existing != null && existing.timestamp.isAfter(update.timestamp)) {
+      return; // Old update, ignore
+    }
+
+    // Save to state
+    final newLocations = Map<String, LocationUpdate>.from(state.peerLocations);
+    newLocations[update.deviceId] = update;
+    state = state.copyWith(peerLocations: newLocations);
+
+    // Relay if ttl > 0
+    if (update.ttl > 0) {
+      final relayedUpdate = update.copyWith(
+        ttl: update.ttl - 1,
+        hopCount: update.hopCount + 1,
+      );
+      _broadcastJson(relayedUpdate.toJson(), excludeId: senderId);
+    }
+  }
+
+  void _broadcastJson(Map<String, dynamic> jsonMap, {String? excludeId}) {
+    if (_nearbyService == null) return;
+    final jsonStr = jsonEncode(jsonMap);
+    
+    for (var endpointId in state.connectedEndpoints) {
+      if (endpointId != excludeId) {
+        _nearbyService!.sendTestMessage(endpointId, jsonStr);
+      }
+    }
+  }
+
+  Future<void> broadcastMyLocation(double lat, double lng) async {
+    final identity = await ref.read(identityProvider.future);
+    final update = LocationUpdate(
+      deviceId: identity.deviceId,
+      lat: lat,
+      lng: lng,
+      timestamp: DateTime.now(),
+      ttl: 3, // start with 3 hops
+      hopCount: 0,
+    );
+    _broadcastJson(update.toJson());
   }
 
   Future<void> startMesh() async {
@@ -105,13 +164,12 @@ class MeshNotifier extends StateNotifier<MeshState> {
       isAdvertising: false,
       isDiscovering: false,
       connectedEndpoints: [],
+      peerLocations: {},
     );
   }
   
   void sendTestMessage(String text) {
-    if (_nearbyService == null) return;
-    for (var endpointId in state.connectedEndpoints) {
-      _nearbyService!.sendTestMessage(endpointId, text);
-    }
+    _broadcastJson({'type': 'ping', 'message': text});
   }
 }
+

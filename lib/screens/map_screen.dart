@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'pairing_screen.dart';
 import '../providers/mesh_provider.dart';
+import '../providers/location_provider.dart';
 
 class MapScreen extends ConsumerStatefulWidget {
   const MapScreen({super.key});
@@ -18,9 +19,10 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   @override
   void initState() {
     super.initState();
-    // Initialize mesh provider
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(meshProvider.notifier).initMesh('nearby-connections-mesh');
+      // trigger location provider initialization
+      ref.read(locationProvider);
     });
   }
 
@@ -31,6 +33,27 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   @override
   Widget build(BuildContext context) {
     final meshState = ref.watch(meshProvider);
+    final myLocation = ref.watch(locationProvider);
+
+    Set<Marker> markers = {};
+    for (var loc in meshState.peerLocations.values) {
+      markers.add(
+        Marker(
+          markerId: MarkerId(loc.deviceId),
+          position: LatLng(loc.lat, loc.lng),
+          infoWindow: InfoWindow(
+            title: 'Peer: ${loc.deviceId.substring(0, 8)}',
+            snippet: 'Hops: ${loc.hopCount}, Updated: ${loc.timestamp.toLocal().toString().split('.').first}',
+          ),
+        ),
+      );
+    }
+    
+    // Auto-update camera if myLocation changes
+    if (myLocation != null) {
+      // For a real app, maybe only move camera on first fix or button press
+      // mapController.animateCamera(CameraUpdate.newLatLng(LatLng(myLocation.latitude, myLocation.longitude)));
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -56,6 +79,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
               zoom: 11.0,
             ),
             myLocationEnabled: true,
+            markers: markers,
           ),
           Positioned(
             bottom: 20,
@@ -68,8 +92,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text('Peers Connected: ${meshState.connectedEndpoints.length}'),
-                    if (meshState.messages.isNotEmpty)
-                      Text('Last Msg: ${meshState.messages.last}'),
+                    if (meshState.peerLocations.isNotEmpty)
+                      Text('Known Locations: ${meshState.peerLocations.length}'),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                       children: [
@@ -83,14 +107,6 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                           },
                           child: Text(meshState.isAdvertising ? 'Stop Mesh' : 'Start Mesh'),
                         ),
-                        ElevatedButton(
-                          onPressed: meshState.connectedEndpoints.isEmpty
-                              ? null
-                              : () {
-                                  ref.read(meshProvider.notifier).sendTestMessage('Ping!');
-                                },
-                          child: const Text('Send Ping'),
-                        ),
                       ],
                     ),
                   ],
@@ -103,4 +119,5 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     );
   }
 }
+
 
