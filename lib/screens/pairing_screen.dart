@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'qr_generator_screen.dart';
+import 'qr_scanner_screen.dart';
 
 class PairingScreen extends StatefulWidget {
   const PairingScreen({super.key});
@@ -20,14 +22,20 @@ class _PairingScreenState extends State<PairingScreen> {
           children: [
             ElevatedButton(
               onPressed: () {
-                // TODO: Generate QR Code
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const QrGeneratorScreen()),
+                );
               },
               child: const Text('Generate Invite QR'),
             ),
             const SizedBox(height: 20),
             ElevatedButton(
               onPressed: () {
-                // TODO: Scan QR Code
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const QrScannerScreen()),
+                );
               },
               child: const Text('Scan Invite QR'),
             ),
@@ -37,3 +45,4 @@ class _PairingScreenState extends State<PairingScreen> {
     );
   }
 }
+
