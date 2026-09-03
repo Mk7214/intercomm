@@ -5,6 +5,7 @@ import 'package:nearby_connections/nearby_connections.dart';
 import '../services/nearby_service.dart';
 import 'identity_provider.dart';
 import '../models/location_update.dart';
+import '../models/membership_record.dart';
 
 final meshProvider = StateNotifierProvider<MeshNotifier, MeshState>((ref) {
   return MeshNotifier(ref);
@@ -16,6 +17,7 @@ class MeshState {
   final List<String> connectedEndpoints;
   final List<String> messages;
   final Map<String, LocationUpdate> peerLocations;
+  final Map<String, MembershipRecord> membershipRecords;
 
   MeshState({
     this.isAdvertising = false,
@@ -23,6 +25,7 @@ class MeshState {
     this.connectedEndpoints = const [],
     this.messages = const [],
     this.peerLocations = const {},
+    this.membershipRecords = const {},
   });
 
   MeshState copyWith({
@@ -31,6 +34,7 @@ class MeshState {
     List<String>? connectedEndpoints,
     List<String>? messages,
     Map<String, LocationUpdate>? peerLocations,
+    Map<String, MembershipRecord>? membershipRecords,
   }) {
     return MeshState(
       isAdvertising: isAdvertising ?? this.isAdvertising,
@@ -38,6 +42,7 @@ class MeshState {
       connectedEndpoints: connectedEndpoints ?? this.connectedEndpoints,
       messages: messages ?? this.messages,
       peerLocations: peerLocations ?? this.peerLocations,
+      membershipRecords: membershipRecords ?? this.membershipRecords,
     );
   }
 }
@@ -85,6 +90,8 @@ class MeshNotifier extends StateNotifier<MeshState> {
             final json = jsonDecode(messageStr);
             if (json['type'] == 'location_update') {
               _handleLocationUpdate(LocationUpdate.fromJson(json), id);
+            } else if (json['type'] == 'membership_gossip') {
+              _handleMembershipGossip(MembershipRecord.fromJson(json['record']), id);
             } else {
               _handlePlainMessage(id, messageStr);
             }
@@ -101,18 +108,15 @@ class MeshNotifier extends StateNotifier<MeshState> {
   }
 
   void _handleLocationUpdate(LocationUpdate update, String senderId) {
-    // Check if we have a newer update for this device
     final existing = state.peerLocations[update.deviceId];
     if (existing != null && existing.timestamp.isAfter(update.timestamp)) {
-      return; // Old update, ignore
+      return; 
     }
 
-    // Save to state
     final newLocations = Map<String, LocationUpdate>.from(state.peerLocations);
     newLocations[update.deviceId] = update;
     state = state.copyWith(peerLocations: newLocations);
 
-    // Relay if ttl > 0
     if (update.ttl > 0) {
       final relayedUpdate = update.copyWith(
         ttl: update.ttl - 1,
@@ -120,6 +124,31 @@ class MeshNotifier extends StateNotifier<MeshState> {
       );
       _broadcastJson(relayedUpdate.toJson(), excludeId: senderId);
     }
+  }
+
+  void _handleMembershipGossip(MembershipRecord record, String senderId) {
+    if (state.membershipRecords.containsKey(record.deviceId)) return;
+
+    final newRecords = Map<String, MembershipRecord>.from(state.membershipRecords);
+    newRecords[record.deviceId] = record;
+    state = state.copyWith(membershipRecords: newRecords);
+
+    // Relay to others
+    _broadcastJson({
+      'type': 'membership_gossip',
+      'record': record.toJson(),
+    }, excludeId: senderId);
+  }
+
+  void broadcastNewMembership(MembershipRecord record) {
+    final newRecords = Map<String, MembershipRecord>.from(state.membershipRecords);
+    newRecords[record.deviceId] = record;
+    state = state.copyWith(membershipRecords: newRecords);
+
+    _broadcastJson({
+      'type': 'membership_gossip',
+      'record': record.toJson(),
+    });
   }
 
   void _broadcastJson(Map<String, dynamic> jsonMap, {String? excludeId}) {
@@ -132,6 +161,7 @@ class MeshNotifier extends StateNotifier<MeshState> {
       }
     }
   }
+
 
   Future<void> broadcastMyLocation(double lat, double lng) async {
     final identity = await ref.read(identityProvider.future);
