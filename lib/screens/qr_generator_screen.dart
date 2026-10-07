@@ -5,6 +5,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:uuid/uuid.dart';
 import '../models/invite_payload.dart';
 import '../providers/identity_provider.dart';
+import '../services/nearby_service.dart';
 
 class QrGeneratorScreen extends ConsumerWidget {
   const QrGeneratorScreen({super.key});
@@ -23,7 +24,7 @@ class QrGeneratorScreen extends ConsumerWidget {
             inviterDeviceId: identity.deviceId,
             inviterPublicKey: base64Encode(identity.publicKeyBytes),
             groupKey: 'temp_group_key_for_v1', // Should be exchanged or generated
-            serviceUUID: 'nearby-connections-mesh',
+            serviceUUID: kMeshServiceId,
             expiresAt: DateTime.now().add(const Duration(minutes: 10)),
             signature: 'dummy_signature',
           );

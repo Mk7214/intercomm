@@ -4,19 +4,26 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'mesh_provider.dart';
 
-final locationProvider = StateNotifierProvider<LocationNotifier, Position?>((ref) {
-  return LocationNotifier(ref);
+final locationProvider = NotifierProvider<LocationNotifier, Position?>(() {
+  return LocationNotifier();
 });
 
-class LocationNotifier extends StateNotifier<Position?> {
-  final Ref ref;
+class LocationNotifier extends Notifier<Position?> {
   StreamSubscription<Position>? _positionStream;
 
-  LocationNotifier(this.ref) : super(null) {
+  @override
+  Position? build() {
     _init();
+    
+    ref.onDispose(() {
+      _positionStream?.cancel();
+    });
+
+    return null;
   }
 
   Future<void> _init() async {
+
     bool serviceEnabled;
     LocationPermission permission;
 
@@ -51,10 +58,5 @@ class LocationNotifier extends StateNotifier<Position?> {
       ref.read(meshProvider.notifier).broadcastMyLocation(position.latitude, position.longitude);
     });
   }
-
-  @override
-  void dispose() {
-    _positionStream?.cancel();
-    super.dispose();
-  }
 }
+
