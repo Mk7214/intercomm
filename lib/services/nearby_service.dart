@@ -96,6 +96,14 @@ class NearbyService {
     );
   }
 
+  Future<bool> rejectConnection(String endpointId) {
+    return Nearby().rejectConnection(endpointId);
+  }
+
+  Future<void> disconnect(String endpointId) {
+    return Nearby().disconnectFromEndpoint(endpointId);
+  }
+
   Future<void> sendJson(String endpointId, Map<String, dynamic> json) {
     final bytes = Uint8List.fromList(utf8.encode(jsonEncode(json)));
     return Nearby().sendBytesPayload(endpointId, bytes);

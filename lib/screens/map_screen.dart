@@ -8,9 +8,11 @@ import 'package:http_cache_file_store/http_cache_file_store.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'members_screen.dart';
 import 'qr_generator_screen.dart';
 import 'qr_scanner_screen.dart';
 import '../widgets/action_dial.dart';
+import '../widgets/peer_color.dart';
 import '../models/location_update.dart';
 import '../providers/mesh_provider.dart';
 import '../providers/location_provider.dart';
@@ -19,31 +21,6 @@ import '../providers/location_provider.dart';
 /// Android may purge) so areas viewed while online stay available offline.
 final Future<FileCacheStore> _tileCacheFuture = getApplicationSupportDirectory()
     .then((dir) => FileCacheStore('${dir.path}${Platform.pathSeparator}map_tiles'));
-
-/// Distinct, high-contrast pin colours. Blue is left out — it's our own dot.
-const _peerPalette = <Color>[
-  Color(0xFFE53935), // red
-  Color(0xFF43A047), // green
-  Color(0xFF8E24AA), // purple
-  Color(0xFFFB8C00), // orange
-  Color(0xFF00897B), // teal
-  Color(0xFFD81B60), // pink
-  Color(0xFF6D4C41), // brown
-  Color(0xFF3949AB), // indigo
-  Color(0xFFC0CA33), // lime
-  Color(0xFF00ACC1), // cyan
-];
-
-/// Stable colour per device. Uses FNV-1a rather than String.hashCode, which
-/// isn't guaranteed to match across runs — this way a friend has the same
-/// colour on every phone in the mesh.
-Color peerColor(String deviceId) {
-  var hash = 0x811c9dc5;
-  for (final unit in deviceId.codeUnits) {
-    hash = ((hash ^ unit) * 0x01000193) & 0xFFFFFFFF;
-  }
-  return _peerPalette[hash % _peerPalette.length];
-}
 
 class MapScreen extends ConsumerStatefulWidget {
   const MapScreen({super.key});
@@ -236,6 +213,19 @@ class _MapScreenState extends ConsumerState<MapScreen> with WidgetsBindingObserv
     return '${s ~/ 3600}h ago';
   }
 
+  static String _statusText(MeshState mesh) {
+    if (mesh.joiningVia != null) {
+      return 'Joining via ${shortId(mesh.joiningVia!)}… keep the phones close';
+    }
+    if (!mesh.inMesh) {
+      return 'Not in a mesh yet. Tap + → Invite friend to start one, '
+          'or Scan invite to join a friend\'s.';
+    }
+    if (!mesh.isRunning) return 'Starting mesh…';
+    return '${mesh.members.length} members · ${mesh.connectedPeers.length} connected · '
+        '${mesh.peerLocations.length} on map';
+  }
+
   void _open(Widget screen) {
     Navigator.push(context, MaterialPageRoute(builder: (_) => screen));
   }
@@ -269,22 +259,36 @@ class _MapScreenState extends ConsumerState<MapScreen> with WidgetsBindingObserv
     });
 
     ref.listen<MeshState>(meshProvider, (prev, next) {
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.of(context);
+      if (prev?.joiningVia != null && prev?.meshId == null && next.meshId != null) {
+        messenger.showSnackBar(const SnackBar(content: Text('Joined the mesh!')));
+        return;
+      }
       final before = prev?.connectedPeers.length ?? 0;
-      if (next.connectedPeers.length > before && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      if (next.connectedPeers.length > before) {
+        messenger.showSnackBar(SnackBar(
           content: Text('Connected to ${next.connectedPeers.length} peer(s)'),
           duration: const Duration(seconds: 2),
         ));
       }
     });
 
+    // Mesh errors (e.g. "you were removed", join failures) show even when
+    // not running; startup errors only while stopped.
     final error = _permissionProblem ?? (mesh.isRunning ? null : mesh.lastError);
+    final canRetry = !mesh.isRunning && (mesh.inMesh || mesh.joiningVia != null);
 
     return Scaffold(
       // Bottom-right speed dial; actions expand upwards.
       floatingActionButton: ActionDial(
         actions: [
           DialAction(icon: Icons.hub, label: 'Mesh debug', onPressed: _showDebugSheet),
+          DialAction(
+            icon: Icons.group,
+            label: 'Members',
+            onPressed: () => _open(const MembersScreen()),
+          ),
           DialAction(
             icon: Icons.qr_code_scanner,
             label: 'Scan invite',
@@ -319,15 +323,8 @@ class _MapScreenState extends ConsumerState<MapScreen> with WidgetsBindingObserv
                         child: Text(error,
                             style: TextStyle(color: Theme.of(context).colorScheme.error)),
                       ),
-                    Text(
-                      mesh.isRunning
-                          ? '${mesh.connectedPeers.length} connected · '
-                              '${mesh.discoveredCount} nearby · '
-                              '${mesh.peerLocations.length} on map'
-                          : 'Starting mesh…',
-                      textAlign: TextAlign.center,
-                    ),
-                    if (error != null && !mesh.isRunning) ...[
+                    Text(_statusText(mesh), textAlign: TextAlign.center),
+                    if (error != null && canRetry) ...[
                       const SizedBox(height: 8),
                       Center(
                         child: FilledButton(
@@ -382,8 +379,8 @@ class _MeshDebugSheet extends ConsumerWidget {
           for (final e in mesh.connectedPeers.entries)
             _PeerRow(deviceId: e.value, text: '${shortId(e.value)}  (endpoint ${e.key})'),
           const SizedBox(height: 12),
-          Text('Members (${mesh.membershipRecords.length})', style: textTheme.titleMedium),
-          for (final r in mesh.membershipRecords.values)
+          Text('Members (${mesh.members.length})', style: textTheme.titleMedium),
+          for (final r in mesh.members)
             Text('• ${shortId(r.deviceId)}  invited by ${shortId(r.invitedBy)}'),
           const SizedBox(height: 12),
           Text('Known locations (${mesh.peerLocations.length})', style: textTheme.titleMedium),

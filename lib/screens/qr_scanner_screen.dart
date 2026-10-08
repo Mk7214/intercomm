@@ -3,10 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../models/invite_payload.dart';
-import '../models/membership_record.dart';
-import '../providers/identity_provider.dart';
 import '../providers/mesh_provider.dart';
 
+/// Scans an invite QR, verifies it, and starts joining. The join itself
+/// (key exchange with the inviter) completes over Bluetooth afterwards.
 class QrScannerScreen extends ConsumerStatefulWidget {
   const QrScannerScreen({super.key});
 
@@ -15,7 +15,7 @@ class QrScannerScreen extends ConsumerStatefulWidget {
 }
 
 class _QrScannerScreenState extends ConsumerState<QrScannerScreen> {
-  bool _scanned = false;
+  bool _busy = false;
   DateTime _lastErrorTime = DateTime.fromMillisecondsSinceEpoch(0);
 
   void _showError(String message) {
@@ -23,83 +23,53 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen> {
     final now = DateTime.now();
     if (now.difference(_lastErrorTime).inSeconds > 2) {
       _lastErrorTime = now;
-      ScaffoldMessenger.of(context).clearSnackBars();
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(content: Text(message)));
     }
   }
 
-  void _onDetect(BarcodeCapture capture) async {
-    if (_scanned) return;
-    
-    final barcodes = capture.barcodes;
-    if (barcodes.isNotEmpty) {
-      final code = barcodes.first.rawValue;
-      if (code != null) {
-        try {
-          final decoded = jsonDecode(code);
-          if (decoded is Map<String, dynamic> && decoded['type'] == 'mesh_invite') {
-            setState(() { _scanned = true; });
-            debugPrint('Scanned valid mesh_invite QR!');
-            
-            final payload = InvitePayload.fromJson(decoded);
-            final identity = await ref.read(identityProvider.future);
-            
-            // Create membership record for self
-            final record = MembershipRecord(
-              deviceId: identity.deviceId,
-              publicKey: base64Encode(identity.publicKeyBytes),
-              invitedBy: payload.inviterDeviceId,
-              joinedAt: DateTime.now(),
-            );
+  Future<void> _onDetect(BarcodeCapture capture) async {
+    if (_busy) return;
+    final code = capture.barcodes.firstOrNull?.rawValue;
+    if (code == null) return;
 
-            // Broadcast to the mesh once connected (or immediately if already connected)
-            ref.read(meshProvider.notifier).broadcastNewMembership(record);
-            
-            // Auto-start the mesh connection after a successful scan
-            ref.read(meshProvider.notifier).startMesh();
-
-            if (mounted) {
-              _showSuccess(payload);
-            }
-          } else {
-            _showError('Invalid QR: Not a mesh invite');
-          }
-        } catch (e, stack) {
-          debugPrint('Error parsing QR: $e\n$stack');
-          _showError('Error parsing QR code');
-          // Don't set _scanned to true on error so we can keep scanning
-        }
+    final InvitePayload invite;
+    try {
+      final decoded = jsonDecode(code);
+      if (decoded is! Map<String, dynamic> || decoded['type'] != 'mesh_invite') {
+        _showError('Not an Intercomm invite');
+        return;
       }
+      invite = InvitePayload.fromJson(decoded);
+    } catch (e) {
+      debugPrint('Error parsing QR: $e');
+      _showError('Could not read this QR code');
+      return;
     }
-  }
 
-  void _showSuccess(InvitePayload payload) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        title: const Text('Found Invite'),
-        content: Text('Invited by: ${payload.inviterDeviceId}'),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context); // close dialog
-              Navigator.pop(context); // close scanner
-            },
-            child: const Text('Join'),
-          )
-        ],
-      ),
-    );
+    _busy = true;
+    final error = await ref.read(meshProvider.notifier).acceptInvite(invite);
+    if (!mounted) return;
+    if (error != null) {
+      _showError(error);
+      // Let the same code be rescanned after the message, in case it's fixed.
+      await Future<void>.delayed(const Duration(seconds: 2));
+      _busy = false;
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('Joining via ${shortId(invite.inviterDeviceId)} — keep the phones close'),
+    ));
+    Navigator.pop(context);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Scan Invite QR')),
-      body: MobileScanner(
-        onDetect: _onDetect,
-      ),
+      appBar: AppBar(title: const Text('Scan invite')),
+      body: MobileScanner(onDetect: _onDetect),
     );
   }
 }
